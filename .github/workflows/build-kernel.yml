@@ -1,0 +1,111 @@
+name: Build Droidspaces Kernel
+
+on:
+  push:
+    branches: [ wind-B1_Q ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v2.4.1-droidspaces)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: wind-B1_Q
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq             bc bison build-essential cpio flex gcc-aarch64-linux-gnu             libncurses-dev libssl-dev lz4 xz-utils zip
+
+      - name: Download Proton Clang toolchain
+        run: |
+          mkdir -p toolchain
+          wget -q https://github.com/kdrag0n/proton-clang-build/releases/download/20201213/proton-clang-20201213.tar.zst
+          tar --zstd -xf proton-clang-20201213.tar.zst -C toolchain/
+          echo "TC_PATH=$PWD/toolchain" >> $GITHUB_ENV
+
+      - name: Build kernel
+        run: |
+          export PATH="$TC_PATH/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          
+          make O=out mido_defconfig
+          make O=out -j$(nproc) CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip 2>&1 | tee build.log
+
+      - name: Package AnyKernel3
+        run: |
+          # Clone AnyKernel3 template
+          git clone --depth 1 https://github.com/osm0sis/AnyKernel3 /tmp/AnyKernel3
+          
+          # Copy the built kernel
+          cp out/arch/arm64/boot/Image.gz-dtb /tmp/AnyKernel3/
+          
+          # Create anykernel.sh for mido
+          cat > /tmp/AnyKernel3/anykernel.sh << 'EOF'
+# AnyKernel3 Ramdisk Mod Script
+properties() { '
+kernel.string=Droidspaces-Enhanced Wind Kernel for Qassa
+do.devicecheck=1
+do.modules=0
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=1
+device.name1=mido
+'; }
+block=/dev/block/platform/soc/7824900.sdhci/by-name/boot;
+is_slot_device=0;
+ramdisk_compression=auto;
+patch_vbmeta_flag=auto;
+. tools/ak3-core.sh;
+dump_boot;
+write_boot;
+EOF
+          
+          # Create zip
+          cd /tmp/AnyKernel3
+          ZIP_NAME="Kernel-Droidspaces-mido-$(date +%Y%m%d).zip"
+          zip -r9 "$ZIP_NAME" * -x .git README.md *placeholder
+          
+          # Copy to workspace
+          cp "$ZIP_NAME" $GITHUB_WORKSPACE/
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-zip
+          path: ${{ env.ZIP_NAME }}
+          if-no-files-found: error
+
+      - name: Create Release (on dispatch with tag)
+        if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.tag }}
+          body: |
+            Droidspaces-enabled kernel for Redmi Note 4 (mido)
+            
+            **Changes:**
+            - Enabled PID_NS, UTS_NS, USER_NS (namespace isolation)
+            - Enabled SYSVIPC, POSIX_MQUEUE (systemd IPC support)
+            - Enabled DEVTMPFS (device filesystem)
+            - Enabled CGROUP_DEVICE, CGROUP_PIDS, CGROUP_NET_PRIO
+            - Enabled BRIDGE_NETFILTER, NETFILTER_XT_MATCH_ADDRTYPE
+            - Disabled ANDROID_PARANOID_NETWORK (fixes internet in NAT containers)
+            
+            **Compatible with:** Droidspaces container runtime
+          files: |
+            *.zip
