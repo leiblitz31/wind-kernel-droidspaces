@@ -1,16 +1,29 @@
-name: Build Droidspaces Kernel
+name: Build Droidspaces Kernel with KernelSU
 on: push
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev make gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
-      
+
+      - name: Add KernelSU
+        run: |
+          cd $GITHUB_WORKSPACE
+          # Clone latest KernelSU (supports kernel 4.4+)
+          curl -sL "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          
+          # Also add KSU config to defconfig if not already present
+          if ! grep -q "CONFIG_KSU=y" arch/arm64/configs/mido_defconfig; then
+            echo "CONFIG_KSU=y" >> arch/arm64/configs/mido_defconfig
+            echo "CONFIG_KSU_TAMPER_SYSCALL_TABLE=y" >> arch/arm64/configs/mido_defconfig
+            echo "" >> arch/arm64/configs/mido_defconfig
+          fi
+
       - name: Build kernel
         run: |
           export ARCH=arm64
@@ -18,7 +31,7 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           make O=out mido_defconfig
           make O=out -j$(nproc)
-      
+
       - name: Upload kernel image
         uses: actions/upload-artifact@v4
         with:
